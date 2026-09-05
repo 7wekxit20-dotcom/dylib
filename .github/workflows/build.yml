@@ -1,4 +1,4 @@
-name: Build iOS Dylib (Linux Cross-Compile)
+name: Build iOS Dylib (Manual Setup)
 
 on:
   push:
@@ -7,18 +7,25 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: macos-13
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Dependencies
+        run: brew install ldid xz
+
       - name: Setup Theos
-        uses: roothide/setup-theos@v1
-        with:
-          theos-branch: master
+        run: |
+          echo "Setting up Theos manually to catch any errors..."
+          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+        env:
+          THEOS: /Users/runner/theos
 
       - name: Build Tweak
         run: |
+          echo "Compiling iOS dylib..."
+          export THEOS=/Users/runner/theos
           make package FINALPACKAGE=1
           
       - name: Upload Artifact
