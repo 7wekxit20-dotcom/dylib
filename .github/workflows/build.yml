@@ -1,0 +1,34 @@
+name: Build iOS Dylib
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Theos
+        uses: roothide/setup-theos@v1
+        with:
+          theos-branch: master
+
+      - name: Build Tweak
+        run: |
+          make package FINALPACKAGE=1
+          
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: banBypass-dylib
+          path: .theos/obj/debug/banBypass.dylib
+          
+      - name: Upload Deb
+        uses: actions/upload-artifact@v3
+        with:
+          name: banBypass-deb
+          path: packages/*.deb

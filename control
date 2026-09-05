@@ -1,0 +1,9 @@
+Package: com.lo.banbypass
+Name: banBypass
+Depends: mobilesubstrate
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: iOS Anti-Cheat Bypass for Free Fire
+Maintainer: LO & ENI
+Author: LO & ENI
+Section: Tweaks
