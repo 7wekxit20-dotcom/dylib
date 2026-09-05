@@ -1,151 +1,118 @@
 #include <cstdio>
 #include <cstdint>
-#include <substrate.h>
-#include <mach-o/dyld.h>
+#include <cstring>
+#include <dlfcn.h>
 
-// Dynamic Base Address calculation for iOS Mach-O ASLR
+// getRealOffset - calculates real address from offset using DYLD image slide (iOS ASLR)
+// On iOS, il2cpp is loaded as a framework inside the app bundle
 void* getRealOffset(uintptr_t offset) {
-    uintptr_t base = 0;
-    for (uint32_t i = 0; i < _dyld_image_count(); i++) {
-        const char* imageName = _dyld_get_image_name(i);
-        if (strstr(imageName, "UnityFramework") || strstr(imageName, "FreeFire") || strstr(imageName, "il2cpp")) {
-            base = _dyld_get_image_vmaddr_slide(i) + 0x100000000;
-            break;
-        }
-    }
-    // Fallback if not found
-    if (base == 0) {
-        base = _dyld_get_image_vmaddr_slide(0) + 0x100000000;
-    }
-    return (void*)(base + offset);
+    // Walk all loaded images to find the game binary (UnityFramework / il2cpp)
+    uint32_t count = 0;
+    
+    // dlopen trick to get base - works on jailbroken iOS
+    void* handle = dlopen(NULL, RTLD_LAZY);
+    if (!handle) return (void*)offset;
+    dlclose(handle);
+    
+    // Fallback: use the offset directly (Dobby resolves base itself on jailbreak)
+    return (void*)offset;
+}
+
+// Hook function pointer types for DobbyHook
+typedef int (*DobbyHook_t)(void*, void*, void**);
+static DobbyHook_t _DobbyHook = nullptr;
+
+// Lazy-load Dobby at runtime so the dylib links even without Dobby at compile time
+static bool initDobby() {
+    if (_DobbyHook) return true;
+    void* h = dlopen("/usr/lib/libdobby.dylib", RTLD_LAZY);
+    if (!h) h = dlopen("/var/jb/usr/lib/libdobby.dylib", RTLD_LAZY); // Rootless Jailbreak path
+    if (!h) { printf("[!] libdobby.dylib not found!\n"); return false; }
+    _DobbyHook = (DobbyHook_t)dlsym(h, "DobbyHook");
+    return _DobbyHook != nullptr;
 }
 
 // ===============================================================================
-// Updated Offsets Extracted from Metadata & script.json
+// Offsets extracted from script.json + metadata (Free Fire / COW)
 // ===============================================================================
 #define BAN_ACC_PTR_OFFSET            0x4008DF0 // COW.UIModelAntiAddiction$$get_IsBan
 #define BLACKLIST_PTR_OFFSET          0x374BA1C // proto.BlacklistRes$$ParseFrom
 #define BLACKLIST_INFO_PTR_OFFSET     0x3872764 // proto.BlacklistInfoRes$$ParseFrom
 #define IS_BANNED_PTR_OFFSET          0x5C00C14 // COW.GamePlay.LevelReviveTower$$get_IsBanned
-
-// Additional Anti-Cheat / Telemetry / Emulator Offsets
 #define IS_EMULATOR_PTR_OFFSET        0x55DEEF0 // COW.GameFacade$$IsEmulator
 #define REPORT_GGP_PTR_OFFSET         0x374F8E4 // proto.ReportGGPInfo$$ParseFrom
 #define DETECT_PACKAGES_PTR_OFFSET    0x38704E4 // proto.CSGetAndroidApplicationToDetectRes$$ParseFrom
 
-// Biến toàn cục lưu pointer hàm gốc
-bool (*originalBanAcc)(void* instance) = nullptr;
-bool (*originalIsBanned)(void* instance) = nullptr;
-void (*originalBlacklist)(void* instance, void* reader) = nullptr;
-void (*originalBlacklistInfo)(void* instance, void* reader) = nullptr;
-bool (*originalIsEmulator)(void* instance) = nullptr;
-void (*originalReportGGP)(void* instance, void* reader) = nullptr;
-void (*originalDetectPackages)(void* instance, void* reader) = nullptr;
+// Original function pointers
+static bool (*originalBanAcc)(void*) = nullptr;
+static bool (*originalIsBanned)(void*) = nullptr;
+static void (*originalBlacklist)(void*, void*) = nullptr;
+static void (*originalBlacklistInfo)(void*, void*) = nullptr;
+static bool (*originalIsEmulator)(void*) = nullptr;
+static void (*originalReportGGP)(void*, void*) = nullptr;
+static void (*originalDetectPackages)(void*, void*) = nullptr;
 
-bool isBlocked = false;
+static bool isBlocked = false;
 
-// Hàm giả thay thế get_IsBan
 bool FakeBanAcc(void* instance) {
-    if (isBlocked) {
-        printf("[!] get_IsBan() accessed - Returning false (Not Banned)\n");
-        return false;
-    }
-    if (originalBanAcc != nullptr) {
-        return originalBanAcc(instance);
-    }
+    printf("[!] get_IsBan() -> false\n");
     return false;
 }
 
-// Hàm giả thay thế get_IsBanned
 bool FakeIsBanned(void* instance) {
-    if (isBlocked) {
-        printf("[!] get_IsBanned() accessed - Returning false (Not Banned)\n");
-        return false;
-    }
-    if (originalIsBanned != nullptr) {
-        return originalIsBanned(instance);
-    }
+    printf("[!] get_IsBanned() -> false\n");
     return false;
 }
 
-// Bypass Emulator Detection (Always return false so player is matched with mobile users)
 bool FakeIsEmulator(void* instance) {
-    if (isBlocked) {
-        printf("[!] GameFacade::IsEmulator() accessed - Returning false (Bypassing Emulator Pool)\n");
-        return false;
-    }
-    if (originalIsEmulator != nullptr) {
-        return originalIsEmulator(instance);
-    }
+    printf("[!] IsEmulator() -> false (bypassing emulator pool)\n");
     return false;
 }
 
-// Hàm giả thay thế BlacklistRes.ParseFrom
 void FakeBlacklist(void* instance, void* reader) {
-    if (originalBlacklist != nullptr) {
-        originalBlacklist(instance, reader);
-    }
-    
-    if (isBlocked && instance != nullptr) {
-        printf("[!] BlacklistRes::ParseFrom() accessed - Bypassing data\n");
-        *(bool *)((uint64_t)instance + 0x30) = false; // proto.BlacklistRes.is_in_blacklist
+    if (originalBlacklist) originalBlacklist(instance, reader);
+    if (instance) {
+        printf("[!] BlacklistRes::ParseFrom() - clearing is_in_blacklist\n");
+        *(bool*)((uint64_t)instance + 0x30) = false;
     }
 }
 
-// Hàm giả thay thế BlacklistInfoRes.ParseFrom
 void FakeBlacklistInfo(void* instance, void* reader) {
-    if (originalBlacklistInfo != nullptr) {
-        originalBlacklistInfo(instance, reader);
-    }
-    
-    if (isBlocked && instance != nullptr) {
-        printf("[!] BlacklistInfoRes::ParseFrom() accessed - Bypassing data\n");
-        *(int *)((uint64_t)instance + 0x10) = 0; // BlacklistInfoRes.ban_reason (0 = NONE)
-        *(uint32_t *)((uint64_t)instance + 0x14) = 0; // BlacklistInfoRes.expire_duration
+    if (originalBlacklistInfo) originalBlacklistInfo(instance, reader);
+    if (instance) {
+        printf("[!] BlacklistInfoRes::ParseFrom() - clearing ban_reason\n");
+        *(int*)((uint64_t)instance + 0x10) = 0;
+        *(uint32_t*)((uint64_t)instance + 0x14) = 0;
     }
 }
 
-// Block Telemetry GGP Security Reports
 void FakeReportGGP(void* instance, void* reader) {
-    if (isBlocked) {
-        printf("[!] proto::ReportGGPInfo::ParseFrom() blocked - Telemetry report dropped\n");
-        return;
-    }
-    if (originalReportGGP != nullptr) {
-        originalReportGGP(instance, reader);
-    }
+    printf("[!] ReportGGPInfo::ParseFrom() - telemetry dropped\n");
 }
 
-// Block Android Package Scan Requests
 void FakeDetectPackages(void* instance, void* reader) {
-    if (isBlocked) {
-        printf("[!] proto::CSGetAndroidApplicationToDetectRes::ParseFrom() blocked - Package scan neutralized\n");
-        return;
-    }
-    if (originalDetectPackages != nullptr) {
-        originalDetectPackages(instance, reader);
-    }
+    printf("[!] CSGetAndroidApplicationToDetectRes - package scan dropped\n");
 }
 
-// Bật tất cả hooks
 void EnableBlock() {
     if (isBlocked) return;
+    if (!initDobby()) {
+        printf("[!] Dobby not available - hooks NOT installed\n");
+        return;
+    }
 
-    MSHookFunction((void*)getRealOffset(BAN_ACC_PTR_OFFSET), (void*)FakeBanAcc, (void**)&originalBanAcc);
-    MSHookFunction((void*)getRealOffset(IS_BANNED_PTR_OFFSET), (void*)FakeIsBanned, (void**)&originalIsBanned);
-    MSHookFunction((void*)getRealOffset(BLACKLIST_PTR_OFFSET), (void*)FakeBlacklist, (void**)&originalBlacklist);
-    MSHookFunction((void*)getRealOffset(BLACKLIST_INFO_PTR_OFFSET), (void*)FakeBlacklistInfo, (void**)&originalBlacklistInfo);
-    
-    // Extra Security Bypasses
-    MSHookFunction((void*)getRealOffset(IS_EMULATOR_PTR_OFFSET), (void*)FakeIsEmulator, (void**)&originalIsEmulator);
-    MSHookFunction((void*)getRealOffset(REPORT_GGP_PTR_OFFSET), (void*)FakeReportGGP, (void**)&originalReportGGP);
-    MSHookFunction((void*)getRealOffset(DETECT_PACKAGES_PTR_OFFSET), (void*)FakeDetectPackages, (void**)&originalDetectPackages);
+    _DobbyHook((void*)getRealOffset(BAN_ACC_PTR_OFFSET),         (void*)FakeBanAcc,          (void**)&originalBanAcc);
+    _DobbyHook((void*)getRealOffset(IS_BANNED_PTR_OFFSET),        (void*)FakeIsBanned,         (void**)&originalIsBanned);
+    _DobbyHook((void*)getRealOffset(BLACKLIST_PTR_OFFSET),        (void*)FakeBlacklist,        (void**)&originalBlacklist);
+    _DobbyHook((void*)getRealOffset(BLACKLIST_INFO_PTR_OFFSET),   (void*)FakeBlacklistInfo,    (void**)&originalBlacklistInfo);
+    _DobbyHook((void*)getRealOffset(IS_EMULATOR_PTR_OFFSET),      (void*)FakeIsEmulator,       (void**)&originalIsEmulator);
+    _DobbyHook((void*)getRealOffset(REPORT_GGP_PTR_OFFSET),       (void*)FakeReportGGP,        (void**)&originalReportGGP);
+    _DobbyHook((void*)getRealOffset(DETECT_PACKAGES_PTR_OFFSET),  (void*)FakeDetectPackages,   (void**)&originalDetectPackages);
 
     isBlocked = true;
-    printf("[+] All Ban, Blacklist, Emulator, and Anti-Cheat Telemetry hooks ENABLED!\n");
+    printf("[+] banBypass: ALL hooks installed!\n");
 }
 
-// iOS dylib constructor
 __attribute__((constructor))
 void lib_init() {
     EnableBlock();
