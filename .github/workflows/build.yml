@@ -1,4 +1,4 @@
-name: Build iOS Dylib
+name: Build iOS Dylib (Linux Cross-Compile)
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-13
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
