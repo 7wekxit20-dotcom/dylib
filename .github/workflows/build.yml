@@ -1,4 +1,4 @@
-name: Build iOS Dylib (Manual Setup)
+name: Build iOS Dylib (Ubuntu Docker)
 
 on:
   push:
@@ -7,25 +7,18 @@ on:
 
 jobs:
   build:
-    runs-on: macos-13
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/theos/theos:latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Dependencies
-        run: brew install ldid xz
-
-      - name: Setup Theos
-        run: |
-          echo "Setting up Theos manually to catch any errors..."
-          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
-        env:
-          THEOS: /Users/runner/theos
+      - name: Fix Permissions
+        run: git config --global --add safe.directory /__w/dylib/dylib || true
 
       - name: Build Tweak
         run: |
-          echo "Compiling iOS dylib..."
-          export THEOS=/Users/runner/theos
           make package FINALPACKAGE=1
           
       - name: Upload Artifact
