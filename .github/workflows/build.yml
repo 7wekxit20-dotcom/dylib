@@ -12,44 +12,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install ARM64 Apple Cross-Compiler (osxcross)
+      - name: Install clang + cross-compile tools
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y clang lld curl git cmake make libssl-dev libxml2-dev zlib1g-dev
+          sudo apt-get install -y clang lld llvm
 
       - name: Compile iOS ARM64 dylib
         run: |
-          echo "Compiling ban.cpp -> banBypass.dylib (iOS ARM64)"
           clang++ \
-            -target arm64-apple-ios14.0 \
-            -shared \
-            -fPIC \
-            -std=c++17 \
-            -O2 \
-            -isysroot /nonexistent \
-            -nostdlib \
-            -Wl,-dylib \
-            -o banBypass.dylib \
-            ban.cpp \
-            -ldl || true
-
-          # If sysroot approach fails, use simpler cross-compile without sysroot
-          if [ ! -f banBypass.dylib ] || [ ! -s banBypass.dylib ]; then
-            echo "Trying alternative compile method..."
-            clang++ \
-              -target arm64-apple-darwin \
-              -shared \
-              -fPIC \
-              -std=c++17 \
-              -O2 \
-              -Wl,-dylib \
-              -o banBypass.dylib \
-              ban.cpp \
-              -ldl
-          fi
-          echo "=== Result ==="
-          ls -lh banBypass.dylib || echo "COMPILE FAILED"
-          file banBypass.dylib || true
+            -target aarch64-apple-darwin \
+            -shared -fPIC -std=c++17 -O2 \
+            -o banBypass.dylib ban.cpp
+          echo "=== Result ===" && ls -lh banBypass.dylib
 
       - name: Upload Dylib
         uses: actions/upload-artifact@v4
